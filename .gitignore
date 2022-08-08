@@ -1,0 +1,6 @@
+#ignore 
+.devcontainer
+vnc_server/start.sh
+vnc_server/memo.txt
+vnc_server/vnc_src/jisakuvnc
+vnc_server/wm
