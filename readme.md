@@ -4,7 +4,7 @@
 
 #### 始め方
 
-Docker構築
+##### Docker構築
 ---
 ```
 $cd vnc-docker
@@ -12,7 +12,7 @@ $docker-compose build
 $docker-compose up -d
 ```
 
-Docker shell
+##### Docker shell
 ---
 ```
 $cd vnc_src
@@ -23,7 +23,7 @@ $xterm &
 $./myvnc
 ```
 
-VNCクライアント
+##### VNCクライアント
 ---
 ```
 127.0.0.1:5900
