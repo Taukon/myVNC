@@ -7,7 +7,7 @@
 ##### Docker構築
 ---
 ```
-$cd vnc-docker
+$cd myVNC
 $docker-compose build
 $docker-compose up -d
 ```
