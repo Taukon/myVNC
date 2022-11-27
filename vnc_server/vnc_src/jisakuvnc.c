@@ -4,25 +4,20 @@
 #include <rfb/rfb.h>
 #include <rfb/keysym.h>
 #include <X11/Xutil.h>
-#include <X11/XKBlib.h>//
+#include <X11/XKBlib.h>
 
 #include <X11/keysym.h>
-#include <X11/extensions/XTest.h> //sudo apt-get install libxtst-dev
+#include <X11/extensions/XTest.h>
 
-
-static int bits_per_color;
-static int fb_bpp, fb_Bpl, fb_depth;
-static int windowHeight;
-static int windowWidth;
 Display *dpy;
 Window root;
-XImage *xi;
-
-static rfbScreenInfoPtr screen;
-
+static rfbScreenInfoPtr rfbScreen;
 
 static void keyevent(rfbBool down, rfbKeySym key, rfbClientPtr cl);
 static void ptrevent(int buttonMask, int x, int y, rfbClientPtr cl);
+
+static void check_update_rfbScreen_depth16(rfbScreenInfoPtr rfbScreen);
+static void check_update_rfbScreen_depth24(rfbScreenInfoPtr rfbScreen);
 
 static int guess_bits_per_color(int bits_per_pixel)
 {
@@ -50,136 +45,320 @@ static int guess_bits_per_color(int bits_per_pixel)
     }
     return bits_per_color;
 }
-
-static void init_fb(void)
+/*****************************************************************************/
+static void set_xcursor(rfbScreenInfoPtr rfbScreen)
 {
-    printf("Initializing framebuffer...\n");
+    int width = 13, height = 22;
+    char cursor[] =
+        " xx          "
+        " x x         "
+        " x  x        "
+        " x   x       "
+        " x    x      "
+        " x     x     "
+        " x      x    "
+        " x       x   "
+        " x     xx x  "
+        " x x   x xxx "
+        " x xx  x   x "
+        " xx x   x    "
+        " xx  x  x    "
+        " x    x  x   "
+        " x    x  x   "
+        "       x  x  "
+        "        x  x "
+        "        x  x "
+        "         xx  "
+        "             "
+        "             ";
+    char mask[] =
+        "xxx          "
+        "xxxx         "
+        "xxxxx        "
+        "xxxxxx       "
+        "xxxxxxx      "
+        "xxxxxxxx     "
+        "xxxxxxxxx    "
+        "xxxxxxxxxx   "
+        "xxxxxxxxxxx  "
+        "xxxxxxxxxxxx "
+        "xxxxxxxxxxxxx"
+        "xxxxxxxxxxxxx"
+        "xxxxxxxxxx  x"
+        "xxxxxxxxxx   "
+        "xxx  xxxxxx  "
+        "xxx  xxxxxx  "
+        "xx    xxxxxx "
+        "       xxxxx "
+        "       xxxxxx"
+        "        xxxxx"
+        "         xxx "
+        "             ";
 
-    dpy = XOpenDisplay(NULL);
-    root = DefaultRootWindow(dpy);
+    rfbCursorPtr c;
 
-    windowHeight = XDisplayHeight(dpy, 0);
-    windowWidth = XDisplayWidth(dpy, 0);
+    c = rfbMakeXCursor(width, height, cursor, mask);
+    c->xhot = 0;
+    c->yhot = 0;
 
-    // Get dump of screen
-    xi = XGetImage(dpy, root, 0, 0, windowWidth, windowHeight, AllPlanes, ZPixmap);
-
-    fb_bpp = (int)xi->bits_per_pixel;
-    fb_Bpl = (int)xi->bytes_per_line;
-    fb_depth = (int)xi->depth;
-    bits_per_color = guess_bits_per_color(fb_bpp);
+    rfbSetCursor(rfbScreen, c);
 }
 
 /*****************************************************************************/
 
 static int init_fb_server(int argc, char **argv)
 {
+    printf("Initializing framebuffer...\n");
+
+    dpy = XOpenDisplay(NULL);
+    root = DefaultRootWindow(dpy);
+
+    int windowHeight = XDisplayHeight(dpy, 0);
+    int windowWidth = XDisplayWidth(dpy, 0);
+
+    // Get dump of rfbScreen
+    XImage *xi = XGetImage(dpy, root, 0, 0, windowWidth, windowHeight, AllPlanes, ZPixmap);
+
+    int bits_per_color = guess_bits_per_color(xi->bits_per_pixel);
+
+    printf("bits_per_pixel: %d\n", (int)xi->bits_per_pixel);
+    printf("bytes_per_line: %d\n", (int)xi->bytes_per_line);
+    printf("depth: %d\n", (int)xi->depth);
+    printf("bits_per_color: %d\n", bits_per_color);
+
     printf("Initializing server...\n");
 
-    screen = rfbGetScreen(&argc, argv, xi->width, xi->height, bits_per_color, 1, fb_bpp / 8);
+    rfbScreen = rfbGetScreen(&argc, argv, xi->width, xi->height, bits_per_color, 1, xi->bits_per_pixel / 8);
 
-    if (!screen)
-        return 1;
-    screen->frameBuffer = xi->data;
-    if (!screen->frameBuffer)
+    if (!rfbScreen)
         return 1;
 
     ////
-    screen->serverFormat.bitsPerPixel = fb_bpp;
-    screen->serverFormat.depth = fb_depth;
-    screen->serverFormat.trueColour = TRUE;
+    rfbScreen->serverFormat.bitsPerPixel = xi->bits_per_pixel;
+    rfbScreen->serverFormat.depth = xi->depth;
+    rfbScreen->serverFormat.trueColour = TRUE;
+    printf("height: %d, width: %d\n", rfbScreen->height, rfbScreen->width);
 
-    /*
-    default
-    true colour: max r 31 g 31 b 31, shift r 0 g 5 b 10
-    change
-    true colour: max r 31 g 63 b 31, shift r 11 g 5 b 0
-    */
-    screen->serverFormat.redShift = 11;
-    screen->serverFormat.greenShift = 5;
-    screen->serverFormat.blueShift = 0;
-    screen->serverFormat.redMax = 31;
-    screen->serverFormat.greenMax = 63;
-    screen->serverFormat.blueMax = 31;
-    ////
+    rfbScreen->desktopName = "My VNC";
+    rfbScreen->kbdAddEvent = keyevent;
+    rfbScreen->ptrAddEvent = ptrevent;
 
-    //
-    screen->kbdAddEvent = keyevent;
-    screen->ptrAddEvent = ptrevent;
-    //
-    rfbInitServer(screen);
+    set_xcursor(rfbScreen);
+
+    if (rfbScreen->serverFormat.depth == 16)
+    {
+        rfbScreen->frameBuffer = xi->data;
+
+        /*
+        default
+        true colour: max r 31 g 31 b 31, shift r 0 g 5 b 10
+        change
+        true colour: max r 31 g 63 b 31, shift r 11 g 5 b 0
+        */
+
+        rfbScreen->serverFormat.redShift = 11;
+        rfbScreen->serverFormat.greenShift = 5;
+        rfbScreen->serverFormat.blueShift = 0;
+        rfbScreen->serverFormat.redMax = 31;
+        rfbScreen->serverFormat.greenMax = 63;
+        rfbScreen->serverFormat.blueMax = 31;
+    }
+    else if (rfbScreen->serverFormat.depth == 24)
+    {
+        int bpp = rfbScreen->serverFormat.bitsPerPixel / 8;
+        char *buffer;
+        buffer = (char *)malloc(sizeof(char) * bpp * xi->width * xi->height);
+
+        for (int y = 0; y < xi->height; y++)
+        {
+            for (int x = 0; x < xi->width; x++)
+            {
+                buffer[(y * xi->width + x) * bpp + 0] = xi->data[(y * xi->width + x) * bpp + 0] & 0xff;
+                buffer[(y * xi->width + x) * bpp + 1] = xi->data[(y * xi->width + x) * bpp + 1] & 0xff;
+                buffer[(y * xi->width + x) * bpp + 2] = xi->data[(y * xi->width + x) * bpp + 2] & 0xff;
+            }
+        }
+        rfbScreen->frameBuffer = buffer;
+
+        rfbScreen->serverFormat.redShift = 16;
+        rfbScreen->serverFormat.greenShift = 8;
+        rfbScreen->serverFormat.blueShift = 0;
+        rfbScreen->serverFormat.redMax = 255;
+        rfbScreen->serverFormat.greenMax = 255;
+        rfbScreen->serverFormat.blueMax = 255;
+
+        XDestroyImage(xi);
+    }
+    else
+    {
+        return 1;
+    }
+
+    if (!rfbScreen->frameBuffer)
+        return 1;
+
+    rfbInitServer(rfbScreen);
+
     return 0;
 }
 
 /*****************************************************************************/
 
+static void keyevent(rfbBool down, rfbKeySym key, rfbClientPtr cl)
+{
 
-static void keyevent(rfbBool down, rfbKeySym key, rfbClientPtr cl){
-    
     uint32_t keycode;
     keycode = XKeysymToKeycode(dpy, key);
-    printf("key: %x code: %x down: %x\n",key,keycode, down);
-    printf("mod: %d ", IsModifierKey(key));
-    XTestFakeKeyEvent(dpy, keycode, down, CurrentTime);
 
+    if (keycode == 0)
+    {
+        printf("error ");
+    }
+    else
+    {
+        XTestFakeKeyEvent(dpy, keycode, down, CurrentTime);
+    }
+
+    printf("mod: %d ", IsModifierKey(key));
+    printf("key: %x code: %x down: %x\n", key, keycode, down);
 }
 
 /*****************************************************************************/
 
 static void ptrevent(int buttonMask, int x, int y, rfbClientPtr cl)
 {
-    //printf("buttonMask: %x\n",buttonMask);
-    //XTestFakeMotionEvent(dpy, -1, x, y, CurrentTime);
+    // if(buttonMask != 0)
+    XTestFakeMotionEvent(dpy, -1, x, y, CurrentTime);
 
-    if (buttonMask != 0){
-        printf("buttonMask Press: %x\n", buttonMask);
-        XTestFakeMotionEvent(dpy, -1, x, y, CurrentTime);
-        XTestFakeButtonEvent(dpy, buttonMask, True, CurrentTime);
-        XTestFakeButtonEvent(dpy, buttonMask, False, CurrentTime);
-        //press = buttonMask;
+    if (buttonMask == 0x10)
+    {
+        printf("scroll down ");
+        // buttonMask: 0x10 -> 0x5
+        buttonMask = 0x5;
+    }
+    else if (buttonMask == 0x8)
+    {
+        printf("scroll up ");
+        // buttonMask: 0x8 -> 0x4
+        buttonMask = 0x4;
+    }
+    else if (buttonMask == 0x4)
+    {
+        printf("left click ");
+        // buttonMask: 0x4 -> 0x2 0x3 ?
+        buttonMask = 0x3;
+    }
+    else if (buttonMask == 0x2)
+    {
+        printf("wheel click ");
+        // buttonMask: 0x2 -> ?
+        // buttonMask = 0xa;
     }
 
+    if (buttonMask != 0)
+    {
+        // XTestFakeMotionEvent(dpy, -1, x, y, CurrentTime);
+        XTestFakeButtonEvent(dpy, buttonMask, True, CurrentTime);
+        XTestFakeButtonEvent(dpy, buttonMask, False, CurrentTime);
+        printf("buttonMask: 0x%x\n", buttonMask);
+    }
+}
+
+/****************************************************************************************/
+
+static void check_update_rfbScreen_depth16(rfbScreenInfoPtr rfbScreen)
+{
+    XImage *xi = XGetImage(dpy, root, 0, 0, rfbScreen->width, rfbScreen->height, AllPlanes, ZPixmap);
+    size_t size = rfbScreen->width * rfbScreen->height * rfbScreen->serverFormat.bitsPerPixel / 8;
+
+    if (memcmp(xi->data, rfbScreen->frameBuffer, size) == 0)
+    {
+        free(xi->data);
+        // printf("1\n");
+    }
+    else
+    {
+        free(rfbScreen->frameBuffer);
+        rfbScreen->frameBuffer = xi->data;
+        rfbMarkRectAsModified(rfbScreen, 0, 0, rfbScreen->width, rfbScreen->height);
+        // printf("2 : %ld\n", size);
+    }
+}
+
+static void check_update_rfbScreen_depth24(rfbScreenInfoPtr rfbScreen)
+{
+    XImage *xi = XGetImage(dpy, root, 0, 0, rfbScreen->width, rfbScreen->height, AllPlanes, ZPixmap);
+
+    int bpp = rfbScreen->serverFormat.bitsPerPixel / 8;
+    size_t size = rfbScreen->width * rfbScreen->height * bpp;
+    // size_t size = rfbScreen->width * rfbScreen->height * xi->depth / 8;
+    char *buffer;
+    buffer = (char *)malloc(sizeof(char) * bpp * xi->width * xi->height);
+
+    for (int y = 0; y < xi->height; y++)
+    {
+        for (int x = 0; x < xi->width; x++)
+        {
+            buffer[(y * xi->width + x) * bpp + 0] = xi->data[(y * xi->width + x) * bpp + 0] & 0xff;
+            buffer[(y * xi->width + x) * bpp + 1] = xi->data[(y * xi->width + x) * bpp + 1] & 0xff;
+            buffer[(y * xi->width + x) * bpp + 2] = xi->data[(y * xi->width + x) * bpp + 2] & 0xff;
+        }
+    }
+
+    if (memcmp(buffer, rfbScreen->frameBuffer, size) == 0)
+    {
+        // free(xi->data);
+        // xi->data = NULL;
+        free(buffer);
+        buffer = NULL;
+        // printf("1\n");
+    }
+    else
+    {
+        free(rfbScreen->frameBuffer);
+        rfbScreen->frameBuffer = buffer;
+        rfbMarkRectAsModified(rfbScreen, 0, 0, rfbScreen->width, rfbScreen->height);
+        // printf("2 : %ld\n", size);
+    }
+
+    XDestroyImage(xi);
 }
 
 /*****************************************************************************/
 
-static void check_update_screen(rfbScreenInfoPtr screen)
+int main(int argc, char **argv)
 {
-    xi = XGetImage(dpy, root, 0, 0, windowWidth, windowHeight, AllPlanes, ZPixmap);
-    size_t size = windowWidth * windowHeight * fb_bpp / 8;
-    if (memcmp(xi->data, screen->frameBuffer, size) == 0)
+    if (init_fb_server(argc, argv) == 1)
     {
-        free(xi->data);
-    }
-    else
-    {
-        free(screen->frameBuffer);
-        screen->frameBuffer = xi->data;
-        rfbMarkRectAsModified(screen, 0, 0, windowWidth, windowHeight);
-    }
+        return 1;
     }
 
-    int main(int argc, char **argv)
+    if (rfbScreen->serverFormat.depth == 16)
     {
-
-        init_fb();
-        if (init_fb_server(argc, argv) == 1)
+        while (rfbIsActive(rfbScreen))
         {
-            return 1;
+            while (rfbScreen->clientHead == NULL)
+                rfbProcessEvents(rfbScreen, 100000);
+
+            rfbProcessEvents(rfbScreen, 100000);
+            check_update_rfbScreen_depth16(rfbScreen);
         }
-
-        while (rfbIsActive(screen))
-        {
-            while (screen->clientHead == NULL)
-                rfbProcessEvents(screen, 100000);
-
-            rfbProcessEvents(screen, 100000);
-            check_update_screen(screen);
-        }
-
-        printf("Cleaning up...\n");
-        free(screen->frameBuffer);
-        rfbScreenCleanup(screen);
-
-        return 0;
     }
+    else if (rfbScreen->serverFormat.depth == 24)
+    {
+        while (rfbIsActive(rfbScreen))
+        {
+            while (rfbScreen->clientHead == NULL)
+                rfbProcessEvents(rfbScreen, 100000);
+
+            rfbProcessEvents(rfbScreen, 100000);
+            check_update_rfbScreen_depth24(rfbScreen);
+        }
+    }
+
+    printf("Cleaning up...\n");
+    free(rfbScreen->frameBuffer);
+    rfbScreenCleanup(rfbScreen);
+
+    return 0;
+}
